@@ -1,43 +1,7 @@
 # -*- coding: utf-8 -*-
-"""
-branche_noeud_oblong.py — ÉTAPE 2 : BRANCHE + NŒUD + OBLONG et ses 2 DIAMÈTRES d1, d2 (un seul fichier, sans curseurs)
-Tout ce que fait branche_noeud.py (étape 1, mêmes réglages), PLUS :
-    • l'OBLONG (jaune) autour du nœud : forme « stade » = rectangle aux bouts arrondis dont
-        - les côtés gauche / droit sont les 2 LIMITES parallèles du nœud (lignes rouges de l'étape 1),
-        - les côtés haut / bas sont les tangentes au point le plus HAUT et le plus BAS du nœud,
-        - le rayon des arrondis = ½ × le plus petit côté ;
-    • les 2 DIAMÈTRES DE L'OBLONG (comme sur le schéma) : 2 segments perpendiculaires qui se croisent au
-      CENTRE de l'oblong et vont d'un bord de l'oblong à l'autre :
-        - d1 = GRAND diamètre (violet) = le plus long des 2 axes de l'oblong,
-        - d2 = PETIT diamètre (bleu)   = le plus court, perpendiculaire à d1 ;
-      l'un est le long de la branche (= longueur entre les 2 limites), l'autre en travers (= hauteur du nœud).
-FENÊTRE en 4 parties :
-    1 (haut gauche)  image caméra : contour (vert), oblong (jaune), 2 limites du nœud (rouge),
-                     d1 (violet), d2 (bleu) et le POINT CENTRAL de l'oblong (rouge) où ils se croisent
-    2 (haut droite)  masque noir et blanc (blanc = branche)
-    3 (bas gauche)   graphique de la méthode d'Otsu : histogramme + seuils
-    4 (bas droite)   informations de l'oblong et des diamètres (en mm si calibré)
-Segmentation : ÉCART DE COULEUR AU FOND (et pas seulement le gris) → les parties pâles de la branche
-(bois clair, reflets, bourgeon crème) sont gardées. 2 seuils : Otsu (parties sûres) + seuil bas juste
-au-dessus du bruit du fond (parties pâles, gardées si elles touchent la branche). Puis morpho 7×7, aire ≥ 5000 px².
-Dessin : VERT = contour extérieur de toute la branche ; CYAN fin = bords de la tige utilisés pour les mesures.
-Ensuite : bords sub-pixel, profil de diamètre, limites du nœud (comme avant).
-
-Touches :
-    c  CALIBRER : poser un étalon (tige de diamètre connu, ex. pige Ø 10,00 mm) à la place de la branche,
-       taper son diamètre dans le terminal → mesure sur 15 images → calibration.json enregistré.
-       Refaire c avec un 2e étalon (ex. Ø 6,00 mm) = calibration plus juste (droite D_mm = a·D_px + b).
-    r  effacer la calibration (retour en pixels)
-    a  moyenne sur 15 images (valeur ± écart-type dans le terminal)
-    s  enregistrer image + résultat + profil (PNG) et une ligne dans mesures_oblong.csv
-    p  afficher / cacher les réglages utilisés (fenêtre 4)
-    +/- exposition
-    q  quitter
-Si calibration.json existe à côté du script (touche c), les mesures sont en mm, sinon en pixels.
-IMPORTANT : l'étalon doit être à la MÊME distance de la caméra que la branche (même support / mandrin).
-"""
+# Les importe
 import os
-os.environ.setdefault("QT_QPA_PLATFORMTHEME", "none")       # évite un plantage Qt/GNOME sur Ubuntu (avant import cv2)
+os.environ.setdefault("QT_QPA_PLATFORMTHEME", "none")       
 import sys, json, math, time, csv, warnings
 import numpy as np
 import cv2

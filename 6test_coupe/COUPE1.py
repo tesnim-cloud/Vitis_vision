@@ -60,14 +60,21 @@ Lancer (PC Linux, sans venv) :
     python3 profil_coupe_0p01mm.py              → caméra Basler n° 0
     python3 profil_coupe_0p01mm.py 1            → caméra n° 1
     python3 profil_coupe_0p01mm.py photo.png    → image enregistrée (sans caméra)
-SESSION D'ENREGISTREMENT (fichiers CSV qui s'ouvrent dans Excel / LibreOffice) :
+SESSION D'ENREGISTREMENT (un fichier EXCEL avec les PHOTOS + des CSV de secours) :
     • à chaque LANCEMENT du programme, une NOUVELLE session : dossier sessions/session_AAAAMMJJ_HHMMSS/ ;
-    • chaque appui sur s = UNE LIGNE de plus dans sessions/…/mesures.csv, avec TOUTES les mesures
-      (calibration, réglages, nœud, oblong d1–d5, périgée, coupe ellipse, zone 0,01 mm, face réelle, qualité) ;
-    • les points tous les 0,01 mm vont dans profils_0p01mm.csv et la largeur de la face dans faces_coupe.csv
-      (même session, colonne n_mesure = numéro de la ligne de mesures.csv) ;
-    • q = fin de la session (fichiers fermés). Relancer le programme = nouvelle session = nouveaux fichiers.
-    • PAS d'images enregistrées (ENREGISTRER_IMAGES = True pour les avoir aussi).
+    • chaque appui sur s = UNE LIGNE de plus dans le fichier Excel session_AAAAMMJJ_HHMMSS.xlsx :
+        feuille « Mesures »        : les 3 PHOTOS (caméra, résultat, 4 fenêtres) en miniature dans la ligne
+                                     + TOUTES les mesures (calibration, réglages, nœud, oblong d1–d5, périgée,
+                                     coupe ellipse, zone 0,01 mm, face réelle, qualité)
+                                     + liens cliquables vers les photos en pleine résolution (dossier images/) ;
+        feuille « Profils_0p01mm » : tous les points tous les 0,01 mm (colonne n_mesure = n° de la ligne) ;
+        feuille « Faces_coupe »    : largeur de la face coupée tous les 0,01 mm ;
+    • les mêmes données sont aussi écrites dans mesures.csv, profils_0p01mm.csv, faces_coupe.csv (secours) ;
+    • q = fin de la session. Relancer le programme = nouvelle session = nouveaux fichiers.
+    • il faut openpyxl et Pillow :  pip3 install --break-system-packages openpyxl pillow
+      (sans eux, le programme marche quand même et écrit seulement les CSV et les photos PNG).
+    • si le fichier Excel est OUVERT pendant un s (Windows), il ne peut pas être réécrit : ferme-le, la ligne
+      est gardée en mémoire et sera écrite au s suivant.
 COUPE SIMULÉE À LA PÉRIGÉE (prédiction de la face coupée, AVANT de couper) :
     • plan de coupe passant par le CENTRE de la périgée, incliné de ANGLE_COUPE (30°) par rapport à une coupe
       droite (perpendiculaire à la branche) — touches u / i pour changer l'angle, o pour inverser le sens ;
@@ -100,6 +107,16 @@ os.environ.setdefault("QT_QPA_PLATFORMTHEME", "none")       # évite un plantage
 import sys, json, math, time, csv, warnings
 import numpy as np
 import cv2
+import io
+import threading
+try:                                                                  # Excel avec photos : openpyxl + Pillow
+    import openpyxl
+    from openpyxl.drawing.image import Image as ImageXL
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    OPENPYXL_OK = True
+except ImportError:                                                   # pas installé → on écrit seulement les CSV
+    OPENPYXL_OK = False
 
 # ---------------------------------------------------------------------------------------------------------
 # Constantes de DÉFINITION (identiques pour toutes les branches — ce ne sont pas des réglages)
@@ -119,10 +136,12 @@ PART_MVT = 0.002           # … et la branche a bougé si plus de 0,2 % des pix
 ANGLE_COUPE = 30.0         # COUPE SIMULÉE : inclinaison (°) du plan de coupe par rapport à une coupe DROITE (touches u / i)
 SENS_COUPE = 1             # +1 / −1 : de quel côté la coupe penche (touche o)
 ECORCE_MM = 0.0            # épaisseur de l'écorce (mm, au pied à coulisse) ; 0 = on ne calcule pas l'ellipse du cambium
-DOSSIER_SESSIONS = "session"   # sous-dossier (à côté du script) où chaque lancement crée sa session
+DOSSIER_SESSIONS = "sessions"   # sous-dossier (à côté du script) où chaque lancement crée sa session
 VIRGULE_DECIMALE = True    # True : 12,345 (Excel en FRANÇAIS) ; False : 12.345 (Excel en anglais / Python)
-ENREGISTRER_IMAGES = True # True : la touche s enregistre aussi les 3 images PNG dans la session
-ENREGISTRER_POINTS = False  # True : points tous les 0,01 mm et largeur de la face dans 2 CSV de la session
+ENREGISTRER_IMAGES = True  # True : photos dans le fichier Excel (miniatures) + PNG pleine résolution (dossier images/)
+ENREGISTRER_POINTS = False  # True : points tous les 0,01 mm et largeur de la face (feuilles Excel + 2 CSV)
+EXCEL = True               # True : fichier Excel .xlsx de la session (avec les photos) ; False : seulement les CSV
+MINIATURE_H = 160          # hauteur des photos dans Excel (pixels) : plus grand = plus lisible mais fichier plus lourd
 PAS_MM = 0.01              # PAS du profil (mm) : un diamètre tous les 0,01 mm, DANS LA ZONE DE LA COUPE seulement
 PAS_SANS_CALIB = 0.5       # sans calibration : un diamètre tous les 0,5 px
 PAS_ECHANT = 0.1           # le long de chaque ligne perpendiculaire, l'image est lue tous les 0,1 px (interpolation bicubique)
@@ -1606,20 +1625,48 @@ def donnees_mesure(res, calib, n, src, stab_txt):
     return d
 
 
+def valeur_excel(v):
+    """Une valeur → cellule Excel : vrai NOMBRE (pas du texte), case vide si absente, oui / non."""
+    if v is None:
+        return None
+    if isinstance(v, (bool, np.bool_)):
+        return "oui" if v else "non"
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, (float, np.floating)):
+        return round(float(v), 5) if np.isfinite(v) else None        # NaN → case vide
+    return str(v)
+
+
+NOMS_PHOTOS = (("image", "photo camera"), ("resultat", "resultat (dessins)"), ("4fenetres", "4 fenetres"))
+
+
 class Session:
     """
     UNE session = UN lancement du programme. Les fichiers sont créés au 1er appui sur s (pas de fichier vide),
-    puis chaque appui ajoute UNE ligne. Chaque ligne est écrite et le fichier refermé tout de suite :
-    si le programme plante, les lignes déjà enregistrées ne sont pas perdues.
+    puis chaque appui ajoute UNE ligne.
+      • CSV : chaque ligne est écrite et le fichier refermé tout de suite (rien n'est perdu si le programme plante) ;
+      • Excel : le classeur reste en MÉMOIRE pendant toute la session et il est ré-enregistré à chaque s
+        (openpyxl ne sait pas « ajouter » à un fichier qui contient des photos : on le réécrit en entier).
     """
     def __init__(self, dossier_script):
         self.debut = time.strftime("%Y%m%d_%H%M%S")                   # nom de la session = date et heure du lancement
         self.dossier = os.path.join(dossier_script, DOSSIER_SESSIONS, f"session_{self.debut}")
+        self.d_images = os.path.join(self.dossier, "images")          # photos en pleine résolution
         self.f_mesures = os.path.join(self.dossier, "mesures.csv")
         self.f_profils = os.path.join(self.dossier, "profils_0p01mm.csv")
         self.f_faces = os.path.join(self.dossier, "faces_coupe.csv")
+        self.f_xlsx = os.path.join(self.dossier, f"session_{self.debut}.xlsx")
         self.n = 0                                                    # nombre de lignes déjà enregistrées
+        self.wb = None                                                # classeur Excel (créé au 1er s)
+        self.photos = []                                              # (octets JPEG, cellule) de toutes les miniatures
+        self._verrou, self._fil, self._file = threading.Lock(), None, []   # écriture Excel en arrière-plan
+        self.excel = EXCEL and OPENPYXL_OK
+        if EXCEL and not OPENPYXL_OK:
+            print("ATTENTION : openpyxl / Pillow absents → pas de fichier Excel, seulement les CSV.\n"
+                  "            Installer : pip3 install --break-system-packages openpyxl pillow")
 
+    # ---------------------------------------------------------------- CSV
     def _ecrire(self, fichier, entete, lignes):
         """Ajoute des lignes à un CSV (l'en-tête seulement si le fichier est nouveau). « ; » = séparateur d'Excel français."""
         neuf = not os.path.exists(fichier)
@@ -1630,38 +1677,170 @@ class Session:
             for l in lignes:
                 w.writerow([valeur_csv(v) for v in l])
 
+    # ---------------------------------------------------------------- EXCEL
+    def _feuille(self, nom, entete, largeurs=None):
+        """Crée une feuille avec un en-tête en gras sur fond vert, figé en haut (il reste visible quand on descend)."""
+        ws = self.wb.create_sheet(nom)
+        ws.append(entete)
+        for c in ws[1]:
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill("solid", fgColor="2E7D32")
+            c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+        ws.row_dimensions[1].height = 45
+        for k_, l_ in enumerate(entete, start=1):                     # largeur des colonnes
+            ws.column_dimensions[get_column_letter(k_)].width = (largeurs or {}).get(k_, max(11, min(24, len(l_) * 0.9)))
+        ws.freeze_panes = "A2" if nom != "Mesures" else "E2"           # Mesures : on fige aussi les photos et le n°
+        return ws
+
+    def _miniature(self, img_bgr):
+        """Photo réduite à MINIATURE_H pixels de haut, en JPEG (fichier Excel léger) → objet image d'openpyxl."""
+        h, w = img_bgr.shape[:2]
+        f = MINIATURE_H / h
+        petit = cv2.resize(img_bgr, (max(1, int(w * f)), MINIATURE_H), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", petit, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        return buf.tobytes(), petit.shape[1]
+
+    def _excel(self, d, profils, entete_p, faces, entete_f, images, liens):
+        """
+        Le .xlsx est écrit EN ARRIÈRE-PLAN (un « fil » séparé) : quand la session grossit, l'écriture prend
+        quelques secondes et la caméra ne doit JAMAIS se figer. Ici on ne fait que poser la mesure dans une
+        FILE D'ATTENTE (instantané) ; c'est le fil qui l'ajoute au classeur et écrit le fichier.
+        """
+        with self._verrou:                                            # verrou très court (juste la file d'attente)
+            self._file.append((d, profils, entete_p, faces, entete_f, images, liens))
+            if self._fil is None:                                     # pas d'écriture en cours → on en lance une
+                self._fil = threading.Thread(target=self._ecrire_fond, daemon=False)
+                self._fil.start()
+
+    def _ecrire_fond(self):
+        """Fil d'arrière-plan : vide la file d'attente dans le classeur, écrit le .xlsx, recommence s'il reste des mesures."""
+        while True:
+            with self._verrou:
+                lot, self._file = self._file, []                      # on prend TOUTES les mesures en attente
+                if not lot:
+                    self._fil = None                                  # plus rien à faire : le fil s'arrête
+                    return
+            try:
+                t0 = time.perf_counter()
+                for m in lot:
+                    self._ajouter(*m)
+                self._sauver()
+                print(f"    Excel à jour : {os.path.basename(self.f_xlsx)} ({self.ws_m.max_row - 1} mesure(s), "
+                      f"{time.perf_counter() - t0:.1f} s)")
+            except PermissionError:                                   # fichier ouvert dans Excel (Windows)
+                print("!! Fichier Excel OUVERT : impossible de l'écrire. Ferme-le : tout est gardé en mémoire "
+                      "et sera écrit au prochain s ou à q (et c'est déjà dans les CSV).")
+            except Exception as e:
+                print("!! Excel non écrit :", type(e).__name__, e)
+
+    def _ajouter(self, d, profils, entete_p, faces, entete_f, images, liens):
+        """Ajoute la mesure n dans le classeur en mémoire (ligne + photos + points)."""
+        if self.wb is None:                                           # 1er s : création du classeur et des 3 feuilles
+            self.wb = openpyxl.Workbook()
+            self.wb.remove(self.wb.active)
+            ent = [nom for _, nom in NOMS_PHOTOS] + [c for c, _ in d] + [f"lien {nom}" for _, nom in NOMS_PHOTOS]
+            self.ws_m = self._feuille("Mesures", ent)
+            self.ws_p = self._feuille("Profils_0p01mm", entete_p) if entete_p else None
+            self.ws_f = self._feuille("Faces_coupe", entete_f) if entete_f else None
+        ws = self.ws_m
+        ligne = [None] * len(NOMS_PHOTOS) + [valeur_excel(v) for _, v in d] + [None] * len(NOMS_PHOTOS)
+        ws.append(ligne)
+        r = ws.max_row                                                # n° de la ligne Excel qui vient d'être écrite
+        if images:                                                    # les 3 PHOTOS dans les 3 premières colonnes
+            ws.row_dimensions[r].height = MINIATURE_H * 0.75 + 4      # hauteur de ligne en points (1 px = 0,75 pt)
+            for k_, (cle, _) in enumerate(NOMS_PHOTOS, start=1):
+                if images.get(cle) is None:
+                    continue
+                octets, larg = self._miniature(images[cle])
+                col = get_column_letter(k_)
+                ws.column_dimensions[col].width = max(ws.column_dimensions[col].width or 0, larg / 7.0 + 1)   # ≈ 7 px par unité
+                self.photos.append((octets, f"{col}{r}"))             # photo + cellule où l'ancrer (gardées en mémoire)
+        for k_, (cle, _) in enumerate(NOMS_PHOTOS):                   # liens vers les photos pleine résolution
+            if liens.get(cle):
+                c = ws.cell(row=r, column=len(NOMS_PHOTOS) + len(d) + 1 + k_, value=f"ouvrir {cle}")
+                c.hyperlink = liens[cle]                              # chemin RELATIF : marche si on déplace le dossier
+                c.font = Font(color="0563C1", underline="single")
+        for c in ws[r]:
+            c.alignment = Alignment(vertical="center")                # texte centré en hauteur, à côté des photos
+        if self.ws_p is not None:
+            for l in profils:
+                self.ws_p.append([valeur_excel(v) for v in l])
+        if self.ws_f is not None:
+            for l in faces:
+                self.ws_f.append([valeur_excel(v) for v in l])
+
+    def _sauver(self):
+        """
+        Écrit le classeur. openpyxl « consomme » les photos quand il enregistre : on les remet donc toutes
+        (à partir des octets JPEG gardés en mémoire) avant CHAQUE enregistrement.
+        On écrit d'abord un fichier temporaire, puis on le renomme : le .xlsx n'est jamais à moitié écrit.
+        """
+        self.ws_m._images = []
+        for octets, cellule in self.photos:
+            self.ws_m.add_image(ImageXL(io.BytesIO(octets)), cellule)
+        tmp = self.f_xlsx + ".tmp"
+        self.wb.save(tmp)
+        os.replace(tmp, self.f_xlsx)                                  # remplace l'ancien fichier d'un coup
+
+    # ---------------------------------------------------------------- touche s
     def enregistrer(self, res, calib, src, stab_txt, images=None):
-        """Touche s : une ligne dans mesures.csv (+ les points de cette mesure dans les 2 autres fichiers)."""
+        """Touche s : une ligne (+ photos) dans l'Excel, et les mêmes données dans les CSV."""
         os.makedirs(self.dossier, exist_ok=True)
         self.n += 1
         d = donnees_mesure(res, calib, self.n, src, stab_txt)
-        self._ecrire(self.f_mesures, [c for c, _ in d], [[v for _, v in d]])
         res = res or {}
         Z, Fr, R = res.get("Z"), res.get("Fr"), res.get("R")
-        nb = 0
+        u = "mm" if calib.ok else "px"
+        # --- 1) photos pleine résolution (PNG) dans images/
+        liens = {}
+        if ENREGISTRER_IMAGES and images:
+            os.makedirs(self.d_images, exist_ok=True)
+            for cle, im in images.items():
+                if im is not None:
+                    nom = f"mesure_{self.n:03d}_{cle}.png"
+                    cv2.imwrite(os.path.join(self.d_images, nom), im)
+                    liens[cle] = f"images/{nom}"
+        # --- 2) points tous les 0,01 mm et largeur de la face
+        profils, faces = [], []
+        entete_p = ["n_mesure", f"position_zone_{u}", f"position_vs_perigee_{u}", f"diametre_{u}", "dans_rectangle", "etat",
+                    "bord_haut_x_px", "bord_haut_y_px", "bord_bas_x_px", "bord_bas_y_px", "centre_x_px", "centre_y_px"]
+        entete_f = ["n_mesure", f"position_ligne_coupe_{u}", f"largeur_face_reelle_{u}", f"largeur_ellipse_{u}"]
         if ENREGISTRER_POINTS and Z is not None and R is not None:
-            u = "mm" if calib.ok else "px"
             xh, xb = vers_image(R, Z["haut_xy"]), vers_image(R, Z["bas_xy"])
             xc = vers_image(R, np.column_stack([Z["s_centre"], Z["centre"]]))
             noms_e = {0: "mesure", 2: "pont", 3: "interpole"}
-            lignes = [[self.n, calib.vl(Z["l"][i]), calib.vl(Z["l_pg"][i]), calib.vd(Z["D"][i]),
-                       "oui" if Z["dans"][i] else "marge", noms_e[int(Z["etat"][i])],
-                       xh[i, 0], xh[i, 1], xb[i, 0], xb[i, 1], xc[i, 0], xc[i, 1]] for i in range(len(Z["s"]))]
-            self._ecrire(self.f_profils, ["n_mesure", f"position_zone_{u}", f"position_vs_perigee_{u}", f"diametre_{u}",
-                                          "dans_rectangle", "etat", "bord_haut_x_px", "bord_haut_y_px", "bord_bas_x_px",
-                                          "bord_bas_y_px", "centre_x_px", "centre_y_px"], lignes)
-            nb = len(lignes)
+            profils = [[self.n, calib.vl(Z["l"][i]), calib.vl(Z["l_pg"][i]), calib.vd(Z["D"][i]),
+                        "oui" if Z["dans"][i] else "marge", noms_e[int(Z["etat"][i])],
+                        xh[i, 0], xh[i, 1], xb[i, 0], xb[i, 1], xc[i, 0], xc[i, 1]] for i in range(len(Z["s"]))]
             if Fr:
-                self._ecrire(self.f_faces, ["n_mesure", f"position_ligne_coupe_{u}", f"largeur_face_reelle_{u}",
-                                            f"largeur_ellipse_{u}"],
-                             [[self.n, a, b, c] for a, b, c in zip(Fr["lam_mm"], Fr["larg_mm"], Fr["larg_ell_mm"])])
-        if ENREGISTRER_IMAGES and images:
-            for nom, im in images.items():
-                cv2.imwrite(os.path.join(self.dossier, f"mesure_{self.n:03d}_{nom}.png"), im)
-        print(f"[s] Mesure n° {self.n} enregistrée → {self.f_mesures}" + (f"  (+ {nb} points de 0,01 mm)" if nb else ""))
+                faces = [[self.n, a, b, c] for a, b, c in zip(Fr["lam_mm"], Fr["larg_mm"], Fr["larg_ell_mm"])]
+        # --- 3) CSV (secours)
+        self._ecrire(self.f_mesures, [c for c, _ in d] + [f"photo_{c}" for c, _ in NOMS_PHOTOS],
+                     [[v for _, v in d] + [liens.get(c) for c, _ in NOMS_PHOTOS]])
+        if ENREGISTRER_POINTS:
+            if profils:
+                self._ecrire(self.f_profils, entete_p, profils)
+            if faces:
+                self._ecrire(self.f_faces, entete_f, faces)
+        # --- 4) EXCEL avec les photos
+        txt = ""
+        if self.excel:
+            self._excel(d, profils, entete_p if ENREGISTRER_POINTS else None, faces,
+                        entete_f if ENREGISTRER_POINTS else None, images if ENREGISTRER_IMAGES else None, liens)
+            txt = "  → Excel en cours d'écriture (arrière-plan)"
+        print(f"[s] Mesure n° {self.n} enregistrée" + (f" ({len(profils)} points de 0,01 mm)" if profils else "") + txt)
 
     def fermer(self):
-        """Touche q : fin de la session."""
+        """Touche q : fin de la session (dernier essai d'écriture de l'Excel si un s avait échoué)."""
+        fil = self._fil
+        if fil is not None:
+            print("Écriture du fichier Excel… (attendre)")
+            fil.join()                                                # on attend la fin de l'écriture en cours
+        if self.wb is not None:
+            try:
+                self._sauver()                                        # dernière écriture (si un essai avait échoué)
+            except PermissionError:
+                print("!! Excel ouvert : la dernière version n'a pas pu être écrite (les CSV sont complets).")
         if self.n:
             print(f"Session terminée : {self.n} mesure(s) dans {self.dossier}")
         else:
@@ -1807,8 +1986,11 @@ def main():
                 moy = []; print(f"Moyenne sur {N_MOYENNE} images…")
             elif k == ord('s'):                                       # UNE LIGNE de plus dans le CSV de la session
                 stab_txt = f"{stab.n}/{N_STAB}" if stab_actif else "arretee"
-                session.enregistrer(res, calib, src, stab_txt,
-                                    images={"image": img, "resultat": dessin, "4fenetres": ecran})
+                try:                                                  # un problème d'écriture ne doit pas arrêter la caméra
+                    session.enregistrer(res, calib, src, stab_txt,
+                                        images={"image": img, "resultat": dessin, "4fenetres": ecran})
+                except Exception as e:
+                    print("!! Enregistrement raté :", type(e).__name__, e)
     finally:
         session.fermer()                                              # q : fin de la session (nouveau CSV au prochain lancement)
         src.fermer()

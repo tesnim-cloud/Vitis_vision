@@ -20,8 +20,6 @@ Exemples :
   python3 rotation_360_test.py --mode continu        # tour continu à la main
   python3 rotation_360_test.py --source dossier --dossier ./images_test --sans-retour
 """
-
-
 import argparse                       # lecture des options de la ligne de commande
 import csv                            # sauvegarde des résultats en CSV
 import os                             # chemins / dossiers

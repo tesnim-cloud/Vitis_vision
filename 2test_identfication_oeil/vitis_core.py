@@ -1,32 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-vitis_core.py — Cœur de la vision de la machine Vitis Optima (caméra 1 : branche, nœud, oblong, point milieu, Périgée).
 
-Ce fichier ne se lance pas tout seul : il est utilisé par
-    etape1_branche_noeud.py      → branche + nœud (limites précises)
-    etape2_oblong_diametres.py   → + oblong autour du nœud, grand / petit diamètre
-    etape3_point_milieu.py       → + point milieu du nœud (croisement de 2 droites)
-    etape4_perigee.py            → + Périgée (sommet du petit axe de l'ellipse du nœud)
-    calibration_mm.py            → conversion pixels → millimètres (calibration.json)
-
-Organisation (les numéros de sections sont repris dans les fichiers Word) :
-    S0  Réglages par défaut
-    S1  Calibration px → mm (lecture, conversion, correction de distorsion)
-    S2  Sources d'images (caméra Basler, fichier image)
-    S3  Segmentation classique (4 méthodes) → masque de la branche
-    S4  Redressement de la branche (axe principal) en pleine résolution
-    S5  Bords SUB-PIXEL et profil de diamètre D(s)
-    S6  Nœud : pic + limites (étape 1)
-    S7  Oblong + grand / petit diamètre (étape 2)
-    S8  Point milieu (étape 3)
-    S9  Appendices (vrille / bourgeon) + ellipse RANSAC + Périgée (étape 4)
-    S10 Analyse complète + dessin + application (fenêtre, curseurs, clavier, moyenne)
-
-Convention géométrique (important pour la précision) :
-    • Un pixel (i, j) a son CENTRE aux coordonnées entières (x = j, y = i). Le bord gauche du pixel est à x = j − 0,5.
-    • Les bords sub-pixel sont les positions où le gris passe à mi-chemin entre fond et branche (règle des 50 %).
-    • Le diamètre = distance entre le bord haut et le bord bas → c'est une vraie distance entre 2 bords (pas un comptage de pixels).
-"""
 import os
 os.environ.setdefault("QT_QPA_PLATFORMTHEME", "none")   # évite un plantage Qt/GNOME sur Ubuntu (avant import cv2)
 import sys, json, math, time, csv

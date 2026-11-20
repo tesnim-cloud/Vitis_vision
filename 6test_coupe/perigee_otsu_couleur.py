@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-
 import os
 os.environ.setdefault("QT_QPA_PLATFORMTHEME", "none")       # évite un plantage Qt/GNOME sur Ubuntu (avant import cv2)
 import sys, json, math, time, csv, warnings
@@ -7,7 +6,7 @@ import numpy as np
 import cv2
 
 # ---------------------------------------------------------------------------------------------------------
-# Constantes de DÉFINITION (identiques pour toutes les branches — ce ne sont pas des réglages)
+# Constantes de DÉFINITION 
 # ---------------------------------------------------------------------------------------------------------
 BORD_NOEUD_PCT = 30.0      # limites du nœud : base + 30 % × (pic − base)
 COUPE_APP_PCT = 50.0       # appendices plus fins que 50 % du diamètre (vrille, pétiole) ignorés pour trouver la tige
